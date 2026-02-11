@@ -3,24 +3,36 @@
 namespace App\Http\Controllers\Web;
 
 use App\Http\Controllers\Controller;
+use App\Models\Company;
+use App\Services\PricingService;
 use Illuminate\Http\Request;
 use Smalot\PdfParser\Parser;
 
 class FileController extends Controller
 {
-    public function index(Request $request)
+    public function __construct(
+        private readonly PricingService $pricingService,
+    ) {}
+
+    public function index(Request $request, Company $company)
     {
-        // request (pode vir de form/Livewire)
+
+        $company->update([
+            'has_custom_pricing' => 1,
+            'pricing_profile_id' => 2,
+        ]);
+
         $paperType             = $request->input('paper_type', 'ap75_imagem');
         $quantidadeCopias      = (int) $request->input('copies', 10);
         $pagsColoridasPorCopia = (int) $request->input('color_pages_per_copy', 1);
-        $encadernar            = (bool) $request->input('with_binding', true);
+        $encadernar            = filter_var($request->input('with_binding', true), FILTER_VALIDATE_BOOL);
 
-        // 1. Preço por página conforme tipo de papel
-        [$valorPagePretoBranco, $valorPageColorida] = $this->getPaperPrices($paperType);
+        // 1. Preços por página vindos do banco (profile default ou SICOOB/custom)
+        [$valorPagePretoBranco, $valorPageColorida] =
+            $this->pricingService->getPaperPrices($company, $paperType);
 
-        // 2. Ler PDF
-        $filename = 'Imagens - Sim6D1 (final).pdf';
+        // 2. Ler PDF (por enquanto fixo, depois você parametriza upload/seleção)
+        $filename = '[10 cópias] APOSTILA PAS 3 (pg).pdf';
         $fullPath = storage_path("app/public/{$filename}");
 
         $parser  = new Parser();
@@ -36,7 +48,7 @@ class FileController extends Controller
             return response()->json(['error' => 'Páginas coloridas por cópia maior que o total de páginas.'], 422);
         }
 
-        // 3. Cálculo impressão (p/b + colorido)
+        // 3. Cálculo impressão
         $totalCopiasColoridas = $quantidadeCopias * $pagsColoridasPorCopia;
         $pagsPretoPorCopia    = $totalPagesOriginal - $pagsColoridasPorCopia;
         $totalCopiasPB        = $quantidadeCopias * $pagsPretoPorCopia;
@@ -45,19 +57,28 @@ class FileController extends Controller
         $totalColorido    = $totalCopiasColoridas * $valorPageColorida;
         $totalImpressao   = $totalPretoBranco + $totalColorido;
 
-        // 4. Cálculo encadernação (por apostila)
+        // 4. Encadernação via service (usa faixas do profile da empresa)
         $bindingPricePerCopy = 0.0;
         $bindingTotal        = 0.0;
 
         if ($encadernar) {
-            $bindingPricePerCopy = $this->getBindingPricePerCopy($totalPagesOriginal);
-            $bindingTotal        = $bindingPricePerCopy * $quantidadeCopias;
+            $bindingPricePerCopy = $this->pricingService
+                ->getBindingPricePerCopy($company, $totalPagesOriginal);
+
+            $bindingTotal = $bindingPricePerCopy * $quantidadeCopias;
         }
 
-        // 5. Total geral (impressão + encadernação)
+        // 5. Total geral
         $totalGeral = $totalImpressao + $bindingTotal;
 
         return response()->json([
+            'company'                  => [
+                'id'                => $company->id,
+                'name'              => $company->name,
+                'has_custom_pricing' => (bool) $company->has_custom_pricing,
+                'pricing_profile_id' => $company->pricing_profile_id,
+            ],
+
             'filename'                 => $filename,
             'total_paginas_pdf'        => $totalPagesOriginal,
             'paper_type'               => $paperType,
@@ -81,48 +102,6 @@ class FileController extends Controller
             'binding_total'            => $bindingTotal,
 
             'total_geral'              => $totalGeral,
-        ], 200);
-    }
-
-    private function getPaperPrices(string $paperType): array
-    {
-        switch ($paperType) {
-            case 'ap75_imagem':
-                return [0.12, 0.20]; // p/b, color
-
-            case 'ap75_4x4':
-                return [0.24, 0.50];
-
-            case 'couche_170_4x0':
-                return [0.50, 0.90];
-
-            default:
-                return [0.12, 0.20];
-        }
-    }
-
-    private function getBindingPricePerCopy(int $pagesPerCopy): float
-    {
-        if ($pagesPerCopy >= 25 && $pagesPerCopy <= 80) {
-            return 10.0;
-        }
-
-        if ($pagesPerCopy >= 81 && $pagesPerCopy <= 120) {
-            return 20.0;
-        }
-
-        if ($pagesPerCopy >= 121 && $pagesPerCopy <= 200) {
-            return 30.0;
-        }
-
-        if ($pagesPerCopy >= 201 && $pagesPerCopy <= 350) {
-            return 40.0;
-        }
-
-        if ($pagesPerCopy >= 351 && $pagesPerCopy <= 450) {
-            return 50.0;
-        }
-
-        return 0.0;
+        ]);
     }
 }

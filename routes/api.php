@@ -10,4 +10,5 @@ Route::get('/user', function (Request $request) {
 })->middleware('auth:sanctum');
 
 
-Route::get("/file", [FileController::class, 'index']);
+Route::get('/companies/{company}/orcamento', [FileController::class, 'index'])
+    ->name('companies.orcamento');
